@@ -4,3 +4,6 @@
 *pycache*
 .env
 /archive
+*.txt
+/catboost_info
+/.ipynb_checkpoints
