@@ -1,10 +1,30 @@
 import nfl_data_py as nfl
 import pandas as pd
 
+# 2024 data has a bug
+# grab play-by-play data to synthesize some base stats. Adding in stats from other platforms after the fact.
+from warnings import simplefilter 
+import numpy as np
+
+
+# this code avoids a numpy error. nfl_data_py will have a new version soon to handle new python and numpy versions
+_read_parquet = pd.read_parquet
+
+def patched_read_parquet(*args, **kwargs):
+    kwargs['engine'] = 'pyarrow'
+    return _read_parquet(*args, **kwargs)
+
+
 
 class DataCreator:
     def __init__(self, years: list = [2023]):
         self._years = years
+
+        # this is a temporary fix for the data API
+        pd.read_parquet = patched_read_parquet
+
+        # warning filter
+        simplefilter(action="ignore", category=pd.errors.PerformanceWarning) 
 
     def load_data(self):
         # this maps player ID's from accross multiple platforms. There is also associated player information like Name, College, etc.
@@ -29,10 +49,13 @@ class DataCreator:
         ).drop_duplicates()
 
         # I need to standardize the game ID and player ID's accross the dataframes
-        self.matchup_data = nfl.import_schedules(self._years)
+        self.matchup_data = nfl.import_schedules(self._years).drop_duplicates()
 
         # grab play-by-play data to synthesize some base stats. Adding in stats from other platforms after the fact.
-        self.pbp_data = nfl.import_pbp_data(years=self._years)
+        self._import_pbp_data()
+
+        # grab roster data
+        self._import_roster_data()
 
         # importing rushing next gen stats data
         self.ngs_rush = nfl.import_ngs_data(
@@ -44,6 +67,43 @@ class DataCreator:
             s_type="rush", years=self._years
         ).drop_duplicates()
 
+    def _import_pbp_data(self):
+
+        # grab play-by-play data to synthesize some base stats. Adding in stats from other platforms after the fact.
+        # there is an issue with participation data after 2023. We need to import these separately.
+
+        # NOTE: According to this twitter post (https://x.com/John_B_Edwards/status/1832091502895579354) participation data may be gone for good. 
+        # TODO: You should remove it from the models
+
+        pbp_init_years = [x for x in self._years if x < 2024]
+        pbp_extra_years = [x for x in self._years if x >= 2024]
+
+        # import pre-2023 data normally
+        pbp_data = nfl.import_pbp_data(years=pbp_init_years).drop_duplicates()
+
+        # import post-2023 data and ignore participation stats
+        temp_2024_pbp = nfl.import_pbp_data(years=pbp_extra_years, include_participation=False)
+
+        for c in [c for c in pbp_data.columns.tolist() if c not in temp_2024_pbp.columns.tolist()]:
+            temp_2024_pbp[c] = np.nan
+
+        self.pbp_data = pd.concat([pbp_data, temp_2024_pbp[pbp_data.columns.tolist()]], ignore_index = True)
+
+    def _import_roster_data(self):
+        r_col_list = ["week", "position", "player_name", "player_id", "team", "status"]
+        rosters = pd.DataFrame(columns=r_col_list)
+        # this is due to a bug in the NFL data API. This function does not work when you pass it multiple years all at once
+        for yr in self._years:
+            t_roster = nfl.import_weekly_rosters(years=[yr])[r_col_list]
+            t_roster["season"] = yr
+            if yr < 2021:
+                t_roster = t_roster[t_roster.week <= 17]
+            else:
+                t_roster = t_roster[t_roster.week <= 18]
+            rosters = pd.concat([rosters, t_roster], ignore_index=True)
+
+        self._rosters = rosters
+
     def clean_data(self):
         # fixing Conklin/Izzo issue
         # TODO: Do we still need to do this? We could probably just drop these players? What happens for older years, is this still an issue?
@@ -52,6 +112,9 @@ class DataCreator:
         )
 
         # we also need to map non-conventional city abbreviations for consistency
+        # TODO: This is a much more prevalent problem, we will map ALL club codes to a common map just for consistencies sake.
+        # TODO: What we should do is have a TEAM_ID variable that is unchanging when club code changes.
+        # TODO: This should be included when you design the database for this project
         self.id_map["team"] = self.id_map["team"].replace(
             {
                 "LVR": "LV",
