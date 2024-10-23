@@ -1,37 +1,72 @@
 import nfl_data_py as nfl
 import pandas as pd
+import numpy as np
+
+from utils import patched_read_parquet
 
 class DataCreator():
-    def __init__(self):
-        pass
+    def __init__(self, years: list, paradigm:str = None):
+        self._years = years
+
+        # this is for grabbing the right type of data among: rushing, passing, receiving
+        if paradigm is not None:
+            self._paradigm = paradigm
+        else:
+            self._paradigm = "all"
+
+        # FIXME: Temp fix for nfl_data_py
+        # this code avoids a numpy error. nfl_data_py will have a new version soon to handle new python and numpy versions
+        _read_parquet = pd.read_parquet
+        pd.read_parquet = patched_read_parquet
+        
 
     def load_data(self):
         # this maps player ID's from accross multiple platforms. There is also associated player information like Name, College, etc. 
         self.id_map = nfl.import_ids()
 
         # we want to have depth charts as depth is likely a good predictor of fantasy value. 1st string is utilized more than 3rd string
-        self.depth_charts = nfl.import_depth_charts(years = [year])
+        self.depth_charts = nfl.import_depth_charts(years = self._years)
 
         # importing next gen stats data from AWS
-        self.ngs_receiving = nfl.import_ngs_data(stat_type = 'receiving', years = [year]).drop_duplicates()
+        self.ngs_receiving = nfl.import_ngs_data(stat_type = 'receiving', years = self._years).drop_duplicates()
 
         # pro football reference stats
-        self.pfr_receiving = nfl.import_weekly_pfr(s_type = "rec", years = [year]).drop_duplicates()
+        self.pfr_receiving = nfl.import_weekly_pfr(s_type = "rec", years = self._years).drop_duplicates()
 
         # # weekly aggregate stats
-        self.weekly = nfl.import_weekly_data(years = [year], downcast=True).drop_duplicates()
+        self.weekly = nfl.import_weekly_data(years = self._years, downcast=True).drop_duplicates()
 
         # I need to standardize the game ID and player ID's accross the dataframes
-        self.matchup_data = nfl.import_schedules([year])
+        self.matchup_data = nfl.import_schedules(self._years)
 
         # grab play-by-play data to synthesize some base stats. Adding in stats from other platforms after the fact.
-        self.pbp_data = nfl.import_pbp_data(years = [year])
+        # self.pbp_data = nfl.import_pbp_data(years = self._years)
+        self.__load_pbp_data()
 
         # importing rushing next gen stats data
-        self.ngs_rush = nfl.import_ngs_data(stat_type = 'rushing', years = [year]).drop_duplicates()
+        self.ngs_rush = nfl.import_ngs_data(stat_type = 'rushing', years = self._years).drop_duplicates()
 
         # rushing pro football reference stats
-        self.pfr_rush = nfl.import_weekly_pfr(s_type = "rush", years = [year]).drop_duplicates()
+        self.pfr_rush = nfl.import_weekly_pfr(s_type = "rush", years = self._years).drop_duplicates()
+
+    def __load_pbp_data(self):
+        # TODO: This will fix itself in future iterations of the nfl_data_py project
+        if 2024 in self._years:
+            no_2024 = [x for x in self._years if x != 2024]
+            pbp_data = nfl.import_pbp_data(years=no_2024)
+            
+            # 2024 needs to be done with a separate flag
+            temp_2024_pbp = nfl.import_pbp_data(years=[2024], include_participation=False)
+            for c in [c for c in pbp_data.columns.tolist() if c not in temp_2024_pbp.columns.tolist()]:
+                temp_2024_pbp[c] = np.nan
+            
+            self.pbp_data = pd.concat([pbp_data, temp_2024_pbp[pbp_data.columns.tolist()]], ignore_index = True)
+        else: 
+            self.pbp_data = nfl.import_pbp_data(years = self._years)
+
+
+    def __load_rosters(self):
+        pass
 
     def clean_data(self):
         # fixing Conklin/Izzo issue
