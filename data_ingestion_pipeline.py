@@ -7,6 +7,28 @@ from warnings import simplefilter
 import numpy as np
 
 
+common_club_code_map =     {
+        "LVR": "LV",
+        "KCC": "KC",
+        "NOS": "NO",
+        "TBB": "TB",
+        "SFO": "SF",
+        "NEP": "NE",
+        "GBP": "GB",
+        "JAC": "JAX",
+        "OAK":"LV",
+        "STL":"LAR",
+        "SL":"LAR",
+        "SD":"LAC",
+        "SDC":"LAC",
+        "RAM":"LAR",
+        "LA":"LAR",
+        "BLT":"BAL",
+        "HST":"HOU",
+        "CLV":"CLE",
+        "ARZ":"ARI"
+    }
+
 # this code avoids a numpy error. nfl_data_py will have a new version soon to handle new python and numpy versions
 _read_parquet = pd.read_parquet
 
@@ -67,6 +89,9 @@ class DataCreator:
             s_type="rush", years=self._years
         ).drop_duplicates()
 
+        # importing injuries
+        self.injuries = nfl.import_injuries(years=self._years).drop_duplicates()
+
     def _import_pbp_data(self):
 
         # grab play-by-play data to synthesize some base stats. Adding in stats from other platforms after the fact.
@@ -102,7 +127,7 @@ class DataCreator:
                 t_roster = t_roster[t_roster.week <= 18]
             rosters = pd.concat([rosters, t_roster], ignore_index=True)
 
-        self._rosters = rosters
+        self.rosters = rosters
 
     def clean_data(self):
         # fixing Conklin/Izzo issue
@@ -112,22 +137,10 @@ class DataCreator:
         )
 
         # we also need to map non-conventional city abbreviations for consistency
-        # TODO: This is a much more prevalent problem, we will map ALL club codes to a common map just for consistencies sake.
+        # TODO: This is a much more prevalent problem, we will map ALL club codes to a common map just for consistencies sake. DONE 10/22/2024
         # TODO: What we should do is have a TEAM_ID variable that is unchanging when club code changes.
         # TODO: This should be included when you design the database for this project
-        self.id_map["team"] = self.id_map["team"].replace(
-            {
-                "LVR": "LV",
-                "KCC": "KC",
-                "NOS": "NO",
-                "TBB": "TB",
-                "SFO": "SF",
-                "NEP": "NE",
-                "LAR": "LA",
-                "GBP": "GB",
-                "JAC": "JAX",
-            }
-        )
+        self._clean_club_codes()
 
         # here we grab unique game id's and home/away teams for each game in the season
         self.game_id_map = pd.concat(
@@ -142,29 +155,8 @@ class DataCreator:
             ignore_index=False,
         )
 
-        # merges the AWS data with the game id data from above
-        self.ngs_receiving = self.ngs_receiving.merge(
-            self.game_id_map,
-            left_on=["week", "team_abbr"],
-            right_on=["week", "team_abbr"],
-        ).rename({"player_gsis_id": "player_id"}, axis=1)
+        self._merge_gameids()
 
-        # merges the PFR data with the game id data from above
-        self.pfr_receiving = self.pfr_receiving.merge(
-            self.id_map[["pfr_id", "gsis_id"]],
-            left_on="pfr_player_id",
-            right_on="pfr_id",
-        ).rename({"gsis_id": "player_id"}, axis=1)
-
-        # NOTE: The weekly data does not have the opponent team info for 2022. Thus we would need different logic to grab the game_id.
-        # We actually end up creating all the stats from this dataset by hand so there is no need.
-
-        # merges the depth chart data with the game id data from above
-        self.depth_charts = self.depth_charts.merge(
-            self.game_id_map,
-            left_on=["week", "club_code"],
-            right_on=["week", "team_abbr"],
-        )
 
         # since we are going to aggregate the play-by-play data to game-by-game data, we want to fix some features so we can count easier
         d = {}
@@ -256,6 +248,65 @@ class DataCreator:
         ]
 
         self.pbp_data = self.pbp_data[rel_cols_pbp].copy()
+
+    def _clean_club_codes(self):
+        self.id_map["team"] = self.id_map["team"].replace(common_club_code_map)
+        self.depth_charts["club_code"] = self.depth_charts["club_code"].replace(common_club_code_map)
+        self.ngs_receiving["team_abbr"] = self.ngs_receiving["team_abbr"].replace(common_club_code_map)
+        self.pfr_receiving["team"] = self.pfr_receiving["team"].replace(common_club_code_map)
+        self.weekly["recent_team"] = self.weekly["recent_team"].replace(common_club_code_map)
+        self.weekly["opponent_team"] = self.weekly["opponent_team"].replace(common_club_code_map)
+        self.matchup_data["away_team"] = self.matchup_data["away_team"].replace(common_club_code_map)
+        self.matchup_data["home_team"] = self.matchup_data["home_team"].replace(common_club_code_map)
+        self.ngs_rush["team_abbr"] = self.ngs_rush["team_abbr"].replace(common_club_code_map)
+        self.pfr_rush["team"] = self.pfr_rush["team"].replace(common_club_code_map)
+        self.injuries['team'] = self.injuries['team'].replace(common_club_code_map)
+        self.rosters['team'] = self.rosters['team'].replace(common_club_code_map)
+
+        # team pops up in many columns in the pbp_data. not all in the below list are team name columns
+        # but for those that aren't, the replace just won't do anything. 
+        for col in [x for x in self.pbp_data.columns if 'team' in x]:
+            self.pbp_data[col] = self.pbp_data[col].replace(common_club_code_map)
+
+    def _merge_gameids(self):
+        # merges the AWS data with the game id data from above
+        self.ngs_receiving = self.ngs_receiving.merge(
+            self.game_id_map,
+            left_on=["week", "team_abbr"],
+            right_on=["week", "team_abbr"],
+        ).rename({"player_gsis_id": "player_id"}, axis=1)
+
+        # merges the PFR data with the game id data from above
+        self.pfr_receiving = self.pfr_receiving.merge(
+            self.id_map[["pfr_id", "gsis_id"]],
+            left_on="pfr_player_id",
+            right_on="pfr_id",
+        ).rename({"gsis_id": "player_id"}, axis=1)
+
+        # merges the AWS data with the game id data from above
+        self.ngs_rushing = self.ngs_rushing.merge(
+            self.game_id_map,
+            left_on=["week", "team_abbr"],
+            right_on=["week", "team_abbr"],
+        ).rename({"player_gsis_id": "player_id"}, axis=1)
+
+        # merges the PFR data with the game id data from above
+        self.pfr_rushing = self.pfr_rushing.merge(
+            self.id_map[["pfr_id", "gsis_id"]],
+            left_on="pfr_player_id",
+            right_on="pfr_id",
+        ).rename({"gsis_id": "player_id"}, axis=1)
+
+        # NOTE: The weekly data does not have the opponent team info for 2022. Thus we would need different logic to grab the game_id.
+        # We actually end up creating all the stats from this dataset by hand so there is no need.
+
+        # merges the depth chart data with the game id data from above
+        self.depth_charts = self.depth_charts.merge(
+            self.game_id_map,
+            left_on=["week", "club_code"],
+            right_on=["week", "team_abbr"],
+        )
+
 
     def engineer_features(self):
 
