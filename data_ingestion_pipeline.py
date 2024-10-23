@@ -29,6 +29,68 @@ common_club_code_map =     {
         "ARZ":"ARI"
     }
 
+rel_cols_pbp = [
+            "play_id",
+            "game_id",
+            "home_team",
+            "away_team",
+            "week",
+            "posteam",
+            "defteam",
+            "yardline_100",
+            "game_date",
+            "game_seconds_remaining",
+            "qtr",
+            "down",
+            "time",
+            "desc",
+            "play_type",
+            "yards_gained",
+            "air_yards",
+            "yards_after_catch",
+            "score_differential",
+            "epa",
+            "incomplete_pass",
+            "interception",
+            "penalty",
+            "rush_attempt",
+            "pass_attempt",
+            "touchdown",
+            "pass_touchdown",
+            "rush_touchdown",
+            "two_point_attempt",
+            "fumble",
+            "fumbled_1_team",
+            "fumbled_1_player_id",
+            "fumbled_1_player_name",
+            "fumbled_2_player_id",
+            "fumbled_2_player_name",
+            "fumbled_2_team",
+            "fumble_lost",
+            "complete_pass",
+            "passer_player_id",
+            "passer_player_name",
+            "passing_yards",
+            "receiver_player_id",
+            "receiver_player_name",
+            "receiving_yards",
+            "rusher_player_id",
+            "rusher_player_name",
+            "rushing_yards",
+            "fumbled_1_player_id",
+            "fumbled_2_player_id",
+            "penalty_player_id",
+            "penalty_yards",
+            "replay_or_challenge",
+            "replay_or_challenge_result",
+            "penalty_type",
+            "offense_players",
+            "players_on_play",
+            "timeout",
+            "is_two_point_conversion",
+            "first_down",
+        ]
+
 # this code avoids a numpy error. nfl_data_py will have a new version soon to handle new python and numpy versions
 _read_parquet = pd.read_parquet
 
@@ -155,8 +217,19 @@ class DataCreator:
             ignore_index=False,
         )
 
+        # get a unique game id on all datasets that don't already have it.
         self._merge_gameids()
 
+
+        # columns renames
+        self.depth_charts = self.depth_charts.rename({"club_code": "team"}, axis=1)
+
+        # cleaning up depth charts
+        # we will need this for defenses later
+        self._depth_charts_og = self.depth_charts.copy()
+
+        self.depth_charts = self.depth_charts[self.depth_charts['formation'] == 'Offense'].copy()
+        self.depth_charts['depth_position'] = self.depth_charts.apply(lambda x: x['position'] if x['depth_position'].strip() == '' else x['depth_position'], axis = 1)
 
         # since we are going to aggregate the play-by-play data to game-by-game data, we want to fix some features so we can count easier
         d = {}
@@ -167,7 +240,30 @@ class DataCreator:
         self.pbp_data = pd.concat([self.pbp_data, pd.DataFrame(d)], axis=1)
 
         # we're only going to consider the regular season
-        self.pbp_data = self.pbp_data[self.pbp_data.week <= 18]
+        # we're only going to consider the regular season
+        # NOTE: In 2021, there was an extra regular season game added
+        # TODO: we can do better than hardcoding this
+        t1 = self.pbp_data[
+            (self.pbp_data.week <= 18)
+            & (
+                (self.pbp_data["game_id"].str.contains("2021"))
+                | (self.pbp_data["game_id"].str.contains("2022"))
+                | (self.pbp_data["game_id"].str.contains("2023"))
+                | (self.pbp_data["game_id"].str.contains("2024"))
+            )
+        ].copy()
+        t2 = self.pbp_data[
+            (self.pbp_data.week <= 17)
+            & (
+                (self.pbp_data["game_id"].str.contains("2020"))
+                | (self.pbp_data["game_id"].str.contains("2019"))
+                | (self.pbp_data["game_id"].str.contains("2018"))
+                | (self.pbp_data["game_id"].str.contains("2017"))
+                | (self.pbp_data["game_id"].str.contains("2016"))
+                | (self.pbp_data["game_id"].str.contains("2015"))
+            )
+        ].copy()
+        self.pbp_data = pd.concat([t1, t2], ignore_index=True)
 
         # just make sure that plays that don't result in a touchdown have data here. Another one-hot (ish)
         self.pbp_data["touchdown"] = self.pbp_data["touchdown"].fillna(0)
@@ -185,68 +281,6 @@ class DataCreator:
         )
 
         # we are also going to restrict to data that we need in the pbp_data, this will make it easier to look at
-        rel_cols_pbp = [
-            "play_id",
-            "game_id",
-            "home_team",
-            "away_team",
-            "week",
-            "posteam",
-            "defteam",
-            "yardline_100",
-            "game_date",
-            "game_seconds_remaining",
-            "qtr",
-            "down",
-            "time",
-            "desc",
-            "play_type",
-            "yards_gained",
-            "air_yards",
-            "yards_after_catch",
-            "score_differential",
-            "epa",
-            "incomplete_pass",
-            "interception",
-            "penalty",
-            "rush_attempt",
-            "pass_attempt",
-            "touchdown",
-            "pass_touchdown",
-            "rush_touchdown",
-            "two_point_attempt",
-            "fumble",
-            "fumbled_1_team",
-            "fumbled_1_player_id",
-            "fumbled_1_player_name",
-            "fumbled_2_player_id",
-            "fumbled_2_player_name",
-            "fumbled_2_team",
-            "fumble_lost",
-            "complete_pass",
-            "passer_player_id",
-            "passer_player_name",
-            "passing_yards",
-            "receiver_player_id",
-            "receiver_player_name",
-            "receiving_yards",
-            "rusher_player_id",
-            "rusher_player_name",
-            "rushing_yards",
-            "fumbled_1_player_id",
-            "fumbled_2_player_id",
-            "penalty_player_id",
-            "penalty_yards",
-            "replay_or_challenge",
-            "replay_or_challenge_result",
-            "penalty_type",
-            "offense_players",
-            "players_on_play",
-            "timeout",
-            "is_two_point_conversion",
-            "first_down",
-        ]
-
         self.pbp_data = self.pbp_data[rel_cols_pbp].copy()
 
     def _clean_club_codes(self):
